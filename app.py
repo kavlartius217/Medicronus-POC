@@ -1,11 +1,12 @@
 __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
 import streamlit as st
 import os
 import tempfile
 import nest_asyncio
+import traceback
+import time
 from crewai import Agent, Task, Crew
 from crewai.project import agent, task, crew, CrewBase
 from crewai.flow import Flow, start, listen, and_, or_, router
@@ -31,6 +32,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Configure logger
+def log_error(error):
+    """Log error to Streamlit and to file if possible"""
+    st.error(f"Error: {str(error)}")
+    error_trace = traceback.format_exc()
+    print(f"ERROR: {str(error)}\n{error_trace}")
+    try:
+        log_dir = os.path.join(os.getcwd(), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, f"error_log_{int(time.time())}.txt"), "w") as f:
+            f.write(f"Error: {str(error)}\n\n{error_trace}")
+    except Exception as e:
+        print(f"Failed to write error log: {str(e)}")
+
 # Sidebar for API keys
 with st.sidebar:
     st.image("https://i.ibb.co/M8JQs2v/medicronus-logo.png", width=250)
@@ -46,17 +61,36 @@ with st.sidebar:
         neo4j_password = st.text_input("Neo4j Password", type="password")
         
         if st.button("Save API Keys"):
-            os.environ['SERPER_DEV_TOOL'] = serper_api
-            os.environ['OPENAI_API_KEY'] = openai_api
-            os.environ['GROQ_API_KEY'] = groq_api
-            os.environ['NEO4J_URI'] = neo4j_uri
-            os.environ['NEO4J_USERNAME'] = neo4j_username
-            os.environ['NEO4J_PASSWORD'] = neo4j_password
-            st.success("API keys saved successfully!")
+            try:
+                # Check if keys are provided
+                if not serper_api or not openai_api or not groq_api or not neo4j_password:
+                    st.warning("Please fill in all required API keys.")
+                else:
+                    os.environ['SERPER_DEV_TOOL'] = serper_api
+                    os.environ['OPENAI_API_KEY'] = openai_api
+                    os.environ['GROQ_API_KEY'] = groq_api
+                    os.environ['NEO4J_URI'] = neo4j_uri
+                    os.environ['NEO4J_USERNAME'] = neo4j_username
+                    os.environ['NEO4J_PASSWORD'] = neo4j_password
+                    st.success("API keys saved successfully!")
+            except Exception as e:
+                log_error(e)
+                st.error("Failed to save API keys.")
 
 # Create temporary directory to store files
 if 'temp_dir' not in st.session_state:
-    st.session_state.temp_dir = tempfile.mkdtemp()
+    try:
+        st.session_state.temp_dir = tempfile.mkdtemp()
+        # Create essential directories
+        os.makedirs(os.path.join(st.session_state.temp_dir), exist_ok=True)
+        
+        # Create placeholder files to avoid FileNotFoundError
+        for file_name in ["report.md", "explained_report.md", "abnormalities.md", "doctors.md"]:
+            with open(os.path.join(st.session_state.temp_dir, file_name), "w") as f:
+                f.write("Placeholder content. This file will be populated during analysis.")
+    except Exception as e:
+        log_error(e)
+        st.error("Failed to create temporary directories. App may not function correctly.")
 
 # Initialize session state variables
 if 'report_content' not in st.session_state:
@@ -229,34 +263,59 @@ class MediTrustAI(Flow[State]):
     @start()
     def medic_bot(self):
         self.state.report = st.session_state.report_content
-        result = (
-            Medic_Bot().crew().kickoff({"report": self.state.report})
-        )
-        self.state.abnormalities = result.raw
-        
-        # Read the output files
-        with open(f"{st.session_state.temp_dir}/report.md", "r") as f:
-            st.session_state.extracted_report = f.read()
-        
-        with open(f"{st.session_state.temp_dir}/explained_report.md", "r") as f:
-            st.session_state.explained_report = f.read()
-        
-        with open(f"{st.session_state.temp_dir}/abnormalities.md", "r") as f:
-            st.session_state.abnormalities = f.read()
-        
-        st.session_state.analysis_complete = True
+        try:
+            result = (
+                Medic_Bot().crew().kickoff({"report": self.state.report})
+            )
+            self.state.abnormalities = result.raw
+            
+            # Read the output files - with safety checks
+            report_path = f"{st.session_state.temp_dir}/report.md"
+            if os.path.exists(report_path):
+                with open(report_path, "r") as f:
+                    st.session_state.extracted_report = f.read()
+            else:
+                st.session_state.extracted_report = "Report extraction failed. Please try again."
+            
+            explained_path = f"{st.session_state.temp_dir}/explained_report.md"
+            if os.path.exists(explained_path):
+                with open(explained_path, "r") as f:
+                    st.session_state.explained_report = f.read()
+            else:
+                st.session_state.explained_report = "Report explanation failed. Please try again."
+            
+            abnorm_path = f"{st.session_state.temp_dir}/abnormalities.md"
+            if os.path.exists(abnorm_path):
+                with open(abnorm_path, "r") as f:
+                    st.session_state.abnormalities = f.read()
+            else:
+                st.session_state.abnormalities = "Abnormalities analysis failed. Please try again."
+            
+            st.session_state.analysis_complete = True
+        except Exception as e:
+            st.error(f"An error occurred during analysis: {str(e)}")
+            st.session_state.analysis_complete = False
 
     def doctor_bot(self, user_city):
-        result = (
-            Doctor_Bot().crew().kickoff({"user_city": user_city, "abnormalities": self.state.abnormalities})
-        )
-        
-        # Read the doctors file
-        with open(f"{st.session_state.temp_dir}/doctors.md", "r") as f:
-            st.session_state.doctors_list = f.read()
-        
-        st.session_state.doctor_search_complete = True
-        return st.session_state.doctors_list
+        try:
+            result = (
+                Doctor_Bot().crew().kickoff({"user_city": user_city, "abnormalities": self.state.abnormalities})
+            )
+            
+            # Read the doctors file with safety check
+            doctors_path = f"{st.session_state.temp_dir}/doctors.md"
+            if os.path.exists(doctors_path):
+                with open(doctors_path, "r") as f:
+                    st.session_state.doctors_list = f.read()
+            else:
+                st.session_state.doctors_list = "Doctor search failed. Please try again."
+            
+            st.session_state.doctor_search_complete = True
+            return st.session_state.doctors_list
+        except Exception as e:
+            st.error(f"An error occurred during doctor search: {str(e)}")
+            st.session_state.doctor_search_complete = False
+            return "Error occurred during doctor search."
 
 
 # Set up Neo4j and ChatBot once data is available
@@ -264,65 +323,103 @@ def setup_chat_interface():
     if not st.session_state.analysis_complete:
         return None
     
-    # Create text files for Neo4j
-    with open(f"{st.session_state.temp_dir}/abnormalities.md", "w") as f:
-        f.write(st.session_state.abnormalities)
+    try:
+        # Create text files for Neo4j - ensure directory exists
+        os.makedirs(st.session_state.temp_dir, exist_ok=True)
+        
+        # Write abnormalities file
+        with open(f"{st.session_state.temp_dir}/abnormalities.md", "w") as f:
+            f.write(st.session_state.abnormalities)
+        
+        # Write doctors file if available
+        if st.session_state.doctor_search_complete and st.session_state.doctors_list:
+            with open(f"{st.session_state.temp_dir}/doctors.md", "w") as f:
+                f.write(st.session_state.doctors_list)
+        
+        # Write explained report file
+        with open(f"{st.session_state.temp_dir}/explained_report.md", "w") as f:
+            f.write(st.session_state.explained_report)
+        
+        # Loading the documents with error handling
+        rcts = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        
+        # Load and process abnormalities document
+        abnorm_path = f"{st.session_state.temp_dir}/abnormalities.md"
+        if os.path.exists(abnorm_path):
+            doc_1 = TextLoader(abnorm_path)
+            doc_1 = doc_1.load()
+            doc_1 = rcts.split_documents(doc_1)
+        else:
+            doc_1 = []
+        
+        # Load and process explained report document
+        explained_path = f"{st.session_state.temp_dir}/explained_report.md"
+        if os.path.exists(explained_path):
+            doc_3 = TextLoader(explained_path)
+            doc_3 = doc_3.load()
+            doc_3 = rcts.split_documents(doc_3)
+        else:
+            doc_3 = []
+        
+        doc = doc_1 + doc_3
+        
+        # Load and process doctors document if available
+        if st.session_state.doctor_search_complete:
+            doctors_path = f"{st.session_state.temp_dir}/doctors.md"
+            if os.path.exists(doctors_path):
+                doc_2 = TextLoader(doctors_path)
+                doc_2 = doc_2.load()
+                doc_2 = rcts.split_documents(doc_2)
+                doc = doc + doc_2
     
-    if st.session_state.doctor_search_complete:
-        with open(f"{st.session_state.temp_dir}/doctors.md", "w") as f:
-            f.write(st.session_state.doctors_list)
+        if not doc:
+            st.warning("No documents available for knowledge base. Chat functionality may be limited.")
+            return None
+            
+        try:
+            # Creating the graph db
+            embeddings = OpenAIEmbeddings()
+            db = Neo4jVector.from_documents(
+                embedding=embeddings,
+                documents=doc
+            )
+            
+            # Creating the bot
+            retriever = db.as_retriever()
+            tool = create_retriever_tool(
+                retriever,
+                "Patient_Records_and_Recommendations_Tool",
+                "This tool stores patient information, including medical records, suggested treatments, and recommended doctors for each patient."
+            )
+        except Exception as e:
+            st.error(f"Error setting up knowledge base: {str(e)}")
+            return None
     
-    with open(f"{st.session_state.temp_dir}/explained_report.md", "w") as f:
-        f.write(st.session_state.explained_report)
-    
-    # Loading the documents
-    rcts = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    
-    doc_1 = TextLoader(f"{st.session_state.temp_dir}/abnormalities.md")
-    doc_1 = doc_1.load()
-    doc_1 = rcts.split_documents(doc_1)
-    
-    doc_3 = TextLoader(f"{st.session_state.temp_dir}/explained_report.md")
-    doc_3 = doc_3.load()
-    doc_3 = rcts.split_documents(doc_3)
-    
-    doc = doc_1 + doc_3
-    
-    if st.session_state.doctor_search_complete:
-        doc_2 = TextLoader(f"{st.session_state.temp_dir}/doctors.md")
-        doc_2 = doc_2.load()
-        doc_2 = rcts.split_documents(doc_2)
-        doc = doc + doc_2
-    
-    # Creating the graph db
-    embeddings = OpenAIEmbeddings()
-    db = Neo4jVector.from_documents(
-        embedding=embeddings,
-        documents=doc
-    )
-    
-    # Creating the bot
-    retriever = db.as_retriever()
-    tool = create_retriever_tool(
-        retriever,
-        "Patient_Records_and_Recommendations_Tool",
-        "This tool stores patient information, including medical records, suggested treatments, and recommended doctors for each patient."
-    )
-    
-    # LLM
-    llm = ChatGroq(model="qwen-qwq-32b")
-    
-    # Prompt
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a healthcare assistant. Use the patient's health reports and the provided tool and the chat history {chat_history} to accurately answer their questions."),
-        ("user", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad")
-    ])
-    
-    agent = create_openai_tools_agent(llm=llm, tools=[tool], prompt=prompt)
-    agent_exec = AgentExecutor(agent=agent, tools=[tool], verbose=False)
-    
-    return agent_exec
+        try:
+            # LLM with error handling
+            if 'GROQ_API_KEY' not in os.environ or not os.environ['GROQ_API_KEY']:
+                st.warning("Groq API Key not set. Chat functionality will not work.")
+                return None
+                
+            llm = ChatGroq(model="qwen-qwq-32b")
+            
+            # Prompt
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a healthcare assistant. Use the patient's health reports and the provided tool and the chat history {chat_history} to accurately answer their questions."),
+                ("user", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad")
+            ])
+            
+            agent = create_openai_tools_agent(llm=llm, tools=[tool], prompt=prompt)
+            agent_exec = AgentExecutor(agent=agent, tools=[tool], verbose=False)
+            
+            return agent_exec
+        except Exception as e:
+            st.error(f"Error setting up chat interface: {str(e)}")
+            return None
+    except Exception as e:
+        st.error(f"Error in chat interface setup: {str(e)}")
+        return None
 
 
 # Main app layout
@@ -371,11 +468,23 @@ with tab1:
             analyze_btn = st.button("🔍 Analyze Report", type="primary")
             
             if analyze_btn:
-                with st.spinner('Analyzing your medical report... This might take a few minutes.'):
-                    medicronus = MediTrustAI()
-                    medicronus.kickoff()
-                st.success('Analysis complete!')
-                st.session_state.analysis_complete = True
+                try:
+                    with st.spinner('Analyzing your medical report... This might take a few minutes.'):
+                        # Check if API keys are set
+                        if 'OPENAI_API_KEY' not in os.environ or not os.environ['OPENAI_API_KEY']:
+                            st.error("OpenAI API Key not set. Please set it in the sidebar.")
+                            return
+                            
+                        medicronus = MediTrustAI()
+                        medicronus.kickoff()
+                        
+                    if st.session_state.analysis_complete:
+                        st.success('Analysis complete!')
+                    else:
+                        st.error('Analysis failed. Please check logs for details.')
+                except Exception as e:
+                    st.error(f"Error during analysis: {str(e)}")
+                    st.session_state.analysis_complete = False
 
 # Tab 2: Analysis Results
 with tab2:
@@ -412,11 +521,24 @@ with tab3:
         
         if st.button("🔍 Find Doctors", type="primary"):
             if user_city:
-                with st.spinner('Searching for specialists in your area... This might take a few minutes.'):
-                    medicronus = MediTrustAI()
-                    medicronus.state.abnormalities = st.session_state.abnormalities
-                    doctors_list = medicronus.doctor_bot(user_city)
-                st.success('Doctor search complete!')
+                try:
+                    with st.spinner('Searching for specialists in your area... This might take a few minutes.'):
+                        # Check if API keys are set
+                        if 'SERPER_DEV_TOOL' not in os.environ or not os.environ['SERPER_DEV_TOOL']:
+                            st.error("SERPER DEV API Key not set. Please set it in the sidebar.")
+                            return
+                            
+                        medicronus = MediTrustAI()
+                        medicronus.state.abnormalities = st.session_state.abnormalities
+                        doctors_list = medicronus.doctor_bot(user_city)
+                    
+                    if st.session_state.doctor_search_complete:
+                        st.success('Doctor search complete!')
+                    else:
+                        st.error('Doctor search failed. Please check logs for details.')
+                except Exception as e:
+                    st.error(f"Error during doctor search: {str(e)}")
+                    st.session_state.doctor_search_complete = False
             else:
                 st.warning("Please enter your city first.")
         
@@ -454,17 +576,27 @@ with tab4:
             with st.chat_message("user"):
                 st.write(user_query)
             
-            # Get response
-            with st.spinner("Thinking..."):
-                response = agent_exec.invoke({"input": user_query, "chat_history": st.session_state.chat_history})
-                bot_response = response["output"]
-            
-            # Display assistant response
-            with st.chat_message("assistant"):
-                st.write(bot_response)
-            
-            # Update chat history
-            st.session_state.chat_history.append({"user": user_query, "bot": bot_response})
+            if agent_exec is not None:
+                try:
+                    # Get response
+                    with st.spinner("Thinking..."):
+                        response = agent_exec.invoke({"input": user_query, "chat_history": st.session_state.chat_history})
+                        bot_response = response["output"]
+                    
+                    # Display assistant response
+                    with st.chat_message("assistant"):
+                        st.write(bot_response)
+                    
+                    # Update chat history
+                    st.session_state.chat_history.append({"user": user_query, "bot": bot_response})
+                except Exception as e:
+                    with st.chat_message("assistant"):
+                        st.error(f"Sorry, I encountered an error: {str(e)}")
+                    st.session_state.chat_history.append({"user": user_query, "bot": f"Error: {str(e)}"})
+            else:
+                with st.chat_message("assistant"):
+                    st.error("Chat interface could not be initialized. Please check API keys and try again.")
+                st.session_state.chat_history.append({"user": user_query, "bot": "Chat interface initialization error"})
     else:
         st.info("Please upload and analyze a report in the 'Upload Report' tab first.")
 
