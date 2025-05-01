@@ -1,6 +1,8 @@
 # app.py
 # Consolidated script for MediCronus POC
-
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import streamlit as st
 import os
 import uuid # To create unique filenames for uploads
