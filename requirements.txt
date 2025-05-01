@@ -31,4 +31,4 @@ nest_asyncio # For handling asyncio event loops in Streamlit/Jupyter environment
 
 # Environment Variable Management (Recommended for local dev)
 python-dotenv
-pysqlite-binary
+pysqlite3-binary
