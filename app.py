@@ -473,7 +473,7 @@ with tab1:
                         # Check if API keys are set
                         if 'OPENAI_API_KEY' not in os.environ or not os.environ['OPENAI_API_KEY']:
                             st.error("OpenAI API Key not set. Please set it in the sidebar.")
-                            return
+                        
                             
                         medicronus = MediTrustAI()
                         medicronus.kickoff()
