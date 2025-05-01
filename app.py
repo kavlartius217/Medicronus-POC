@@ -1,5 +1,5 @@
 # app.py
-# Consolidated script for MediCronus POC
+# Consolidated script for MediCronus POC - with added debugging prints
 __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
@@ -10,9 +10,9 @@ from pathlib import Path
 import nest_asyncio # For handling asyncio event loops
 
 # --- Essential Imports ---
-from crewai import Agent, Task, Crew
+from crewai import Agent, Task, Crew, CrewBase
 from crewai.process import Process
-from crewai.project import agent, task, crew,  CrewBase
+from crewai.project import agent, task, crew # For decorator usage
 from crewai_tools import SerperDevTool
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -24,18 +24,24 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain_groq import ChatGroq
 # Optional: If your agent needs specific message types
 # from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.documents import Document # Added for split_text_for_indexing
 
 # Apply nest_asyncio for environments like Streamlit that might have an event loop
 try:
     nest_asyncio.apply()
 except RuntimeError:
     # Handle cases where it might already be applied or not needed
+    # Example policy setting (might vary based on OS/environment)
     import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy()) # Example for Windows if needed
-    nest_asyncio.apply()
+    try:
+        # Attempt setting a policy if possible (e.g., for Windows)
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        nest_asyncio.apply() # Try applying again after setting policy
+    except Exception: # Broad except as policy setting might not be available/needed
+        st.warning(f"Could not apply nest_asyncio; proceeding. Async operations might behave unexpectedly.")
 except Exception as e:
-     st.warning(f"Could not apply nest_asyncio: {e}")
-     # Fallback or proceed without if not strictly necessary for all parts
+     st.warning(f"Could not apply nest_asyncio: {e}. Async operations might behave unexpectedly.")
+
 
 # --- Environment Variables & API Key Setup ---
 # For local development, ensure these are set in your environment
@@ -78,43 +84,38 @@ if missing_keys:
 @CrewBase
 class Medic_Bot():
     """The Medic Bot analyzes the health report and generates comprehensive and useful insights"""
-
+    # --- Agent Definitions ---
     @agent
     def report_extractor_agent(self) -> Agent:
-        # Configure the LLM for the agent if needed (defaults to OpenAI GPT-4 if not specified)
-        # llm = ChatGroq(temperature=0, model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY) # Example
         return Agent(
             role="Extract, organize, and structure report contents into a clear and well-formatted document.",
             goal="Produce a logically structured and comprehensive report that enhances readability while preserving all information.",
-            backstory="You are an expert in report structuring, ensuring that extracted content is well-organized, clearly formatted, and easy to navigate. Your role is to transform raw report data into a polished document with logical flow and coherence.",
-            memory=True, verbose=True, allow_delegation=False#, llm=llm # Assign LLM if specific one needed
+            backstory="You are an expert in report structuring...", # Keep full backstory
+            memory=True, verbose=True, allow_delegation=False
         )
 
     @agent
     def report_explanation_agent(self) -> Agent:
-        # llm = ChatGroq(temperature=0, model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY) # Example
-        return Agent(
+         return Agent(
             role="Analyze the report received from the report_extractor_agent, evaluate all values, and determine which fall within the normal range and which deviate.",
             goal="Generate a well-structured and comprehensive report that classifies values as normal or abnormal, explains their significance, and identifies potential health implications based *only* on the provided report data.",
-            backstory="You are an experienced pathologist specializing in interpreting blood reports with deep expertise in analyzing medical values. Your role is to evaluate, explain, and provide meaningful insights to help understand the report findings effectively. You do not provide external medical advice, only interpret the given data.",
-            memory=True, verbose=True, allow_delegation=False#, llm=llm
+            backstory="You are an experienced pathologist...", # Keep full backstory
+            memory=True, verbose=True, allow_delegation=False
         )
 
     @agent
     def abnormalities_agent(self) -> Agent:
-        # llm = ChatGroq(temperature=0, model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY) # Example
         return Agent(
             role="Analyze the report received from the report_explanation_agent, identify abnormal values, and focus on those. "
             "Provide potential actionable recommendations for lifestyle changes or diet based *only* on the identified abnormalities in the report. "
             "Assess the potential severity of abnormalities based on deviation from normal ranges and determine if medical consultation is generally advisable for such findings.",
             goal="Generate a structured and detailed report that highlights abnormal values, explains their significance based on the report context, "
             "and suggests general, non-prescriptive recommendations for discussion with a healthcare professional. Flag findings that typically warrant medical attention.",
-            backstory="You are a highly experienced medical analyst specializing in identifying potential health risks from reports and providing data-driven insights. "
-            "Your expertise lies in interpreting abnormal health metrics and offering general guidance on areas for potential improvement or further discussion with a doctor. "
-            "You ensure that users understand the report's findings and the importance of professional medical consultation.",
-            memory=True, verbose=True, allow_delegation=False#, llm=llm
+            backstory="You are a highly experienced medical analyst...", # Keep full backstory
+            memory=True, verbose=True, allow_delegation=False
         )
 
+    # --- Task Definitions ---
     @task
     def report_extractor_task(self) -> Task:
         return Task(
@@ -122,7 +123,6 @@ class Medic_Bot():
             "Ensure logical flow, clarity, and readability by using appropriate headings, subheadings, and formatting. Preserve all numerical values and test names accurately.",
             expected_output="A complete and professionally structured report in Markdown format (.md) that maintains all essential information while improving organization "
             "and presentation. The final document should be clear, concise, and easy to navigate.",
-            # output_file="report.md", # CrewAI handles file naming if multiple runs occur, let's rely on the final result object
             agent=self.report_extractor_agent()
         )
 
@@ -141,7 +141,6 @@ class Medic_Bot():
             "- Provides meaningful explanations for values, focusing on abnormalities, including possible general implications.\n"
             "- Is structured with clear headings, subheadings, and bullet points for readability.\n",
             agent=self.report_explanation_agent(),
-            # output_file="explained_report.md",
             context=[self.report_extractor_task()] # Ensure context passing works
         )
 
@@ -161,9 +160,9 @@ class Medic_Bot():
              "- Is formatted with clear headings, subheadings, and bullet points.",
              context=[self.report_explanation_task()],
              agent=self.abnormalities_agent(),
-             # output_file="abnormalities.md" # Rely on final result object
         )
 
+    # --- Crew Definition ---
     @crew
     def crew(self) -> Crew:
         return Crew(
@@ -177,10 +176,9 @@ class Medic_Bot():
 @CrewBase
 class Doctor_Bot():
     """This bot will find the best doctors for the user based on abnormalities and location."""
-
+    # --- Agent Definition ---
     @agent
     def doctor_finder_agent(self) -> Agent:
-        # llm = ChatGroq(temperature=0, model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY) # Example
         return Agent(
             role="Specialist Doctor Finder Agent",
             goal="Find highly-rated doctors specializing in the specific medical conditions or abnormalities provided, within the user's specified city or nearby areas. Provide detailed contact and practice information.",
@@ -190,9 +188,10 @@ class Doctor_Bot():
             tools=[SerperDevTool()], # Use the search tool
             verbose=True,
             memory=False, # This agent likely doesn't need long-term memory for a single search
-            allow_delegation=False#, llm=llm
+            allow_delegation=False
         )
 
+    # --- Task Definition ---
     @task
     def doctor_finder_task(self) -> Task:
         return Task(
@@ -208,9 +207,9 @@ class Doctor_Bot():
             "7. Brief summary of patient reviews or ratings found (if available).",
             expected_output="A list of 2-5 recommended specialists formatted clearly in Markdown (.md). Each entry should include all requested details (Name, Specialization, Clinic/Hospital, Address, Phone, URL, Reviews Summary). If no relevant doctors are found, state that clearly.",
             agent=self.doctor_finder_agent(),
-            # output_file="doctors.md" # Rely on final result object
         )
 
+    # --- Crew Definition ---
     @crew
     def crew(self) -> Crew:
         return Crew(
@@ -222,11 +221,9 @@ class Doctor_Bot():
 
 
 # --- Neo4j & Chatbot Setup Functions ---
-
 # @st.cache_resource # Cache resource-intensive objects
 def get_embeddings_model():
     """Initializes and returns the OpenAI embeddings model."""
-    # Ensure API key is available
     if not OPENAI_API_KEY:
         st.error("OpenAI API Key not found. Cannot initialize embeddings model.")
         return None
@@ -234,6 +231,7 @@ def get_embeddings_model():
         return OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
     except Exception as e:
         st.error(f"Failed to initialize OpenAI Embeddings: {e}")
+        st.exception(e) # Show traceback
         return None
 
 # @st.cache_resource
@@ -245,11 +243,9 @@ def get_llm():
     try:
         # Recommended Llama3 model
         return ChatGroq(temperature=0.1, model_name="llama3-70b-8192", groq_api_key=GROQ_API_KEY)
-        # Alternatives:
-        # return ChatGroq(temperature=0.1, model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY)
-        # return ChatGroq(temperature=0.1, model_name="gemma-7b-it", groq_api_key=GROQ_API_KEY)
     except Exception as e:
         st.error(f"Failed to initialize Groq LLM: {e}")
+        st.exception(e) # Show traceback
         return None
 
 # @st.cache_resource # Cache the connection if credentials don't change often
@@ -258,60 +254,41 @@ def setup_vector_store_and_retriever(docs_to_index: list, _embeddings):
     if not docs_to_index or not _embeddings:
         st.warning("No documents or embeddings model provided for vector store setup.")
         return None, None
-
-    # Ensure Neo4j credentials are valid
     if not all([NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD]):
         st.error("Neo4j connection details missing. Cannot create vector store.")
         return None, None
 
-    st.write(f"Preparing to index {len(docs_to_index)} document chunks...") # Debug
-
+    st.write(f"Debug: Preparing to index {len(docs_to_index)} document chunks...")
     try:
-        # Attempt to clear existing data *before* creating the new index
-        # This prevents adding duplicate data if the same report is processed again
-        # Note: This deletes ALL nodes with the default label ('Chunk') in the 'vector' index.
-        # Be cautious if using the same Neo4j instance for other purposes.
+        # Clear existing data first (optional, consider implications)
         try:
+            st.write("Debug: Attempting to connect to existing Neo4j index for clearing...")
             temp_db_to_clear = Neo4jVector.from_existing_index(
-                embedding=_embeddings,
-                url=NEO4J_URI,
-                username=NEO4J_USERNAME,
-                password=NEO4J_PASSWORD,
-                index_name="vector", # Ensure this matches the index name used below
-                database="neo4j", # Default is 'neo4j'
+                embedding=_embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
+                index_name="vector", database="neo4j",
             )
-            # You might want a more specific deletion strategy if needed
-            # E.g., delete based on a session ID or filename stored as metadata
+            st.write("Debug: Deleting all nodes in 'vector' index...")
             temp_db_to_clear.delete(delete_all=True)
-            st.info("Cleared existing data in Neo4j 'vector' index for this session.")
+            st.info("Cleared existing data in Neo4j 'vector' index.")
         except Exception as e:
-            # This often happens if the index doesn't exist yet (first run)
             st.warning(f"Could not clear Neo4j index (may be empty or first run): {e}")
 
-        # Create the vector store with the new documents
+        # Create the vector store
+        st.write("Debug: Creating new Neo4j vector store from documents...")
         db = Neo4jVector.from_documents(
-            documents=docs_to_index, # Pass the already split documents
-            embedding=_embeddings,
-            url=NEO4J_URI,
-            username=NEO4J_USERNAME,
-            password=NEO4J_PASSWORD,
-            database="neo4j",  # Specify the database name
-            index_name="vector", # Specify an index name (important for retrieval and clearing)
-            # node_label="ReportChunk", # Optional: Custom node label
-            # embedding_node_property="embedding", # Default property name
-            # text_node_property="text", # Default property name
+            documents=docs_to_index, embedding=_embeddings, url=NEO4J_URI,
+            username=NEO4J_USERNAME, password=NEO4J_PASSWORD, database="neo4j", index_name="vector",
         )
         st.success("Neo4j Vector Store created/updated successfully!")
         retriever = db.as_retriever()
         tool = create_retriever_tool(
-            retriever,
-            "Patient_Report_Analysis_Tool", # Tool name
-            "Use this tool to search for information within the patient's analyzed medical report. It contains the structured report, explanation of terms and values, identified abnormalities, and potentially doctor recommendations." # Tool description
+            retriever, "Patient_Report_Analysis_Tool",
+            "Use this tool to search for information within the patient's analyzed medical report..." # Keep description
         )
         return tool, db
     except Exception as e:
         st.error(f"Failed to create/update Neo4j Vector Store: {e}")
-        # Provide more detail if possible, e.g., check connection, credentials, embedding dimensions
+        st.exception(e) # Show traceback
         return None, None
 
 # @st.cache_resource # Cache the agent executor
@@ -321,30 +298,24 @@ def create_chat_agent(_llm, _tool):
         st.error("LLM or Retriever Tool is missing. Cannot create chat agent.")
         return None
 
-    # Define the prompt for the chat agent
-    # Use MessagesPlaceholder for history and agent_scratchpad
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are MediGuide, a helpful AI assistant designed to discuss the patient's *most recently analyzed* medical report. Your knowledge comes solely from the 'Patient_Report_Analysis_Tool'. Answer questions based *only* on the information retrieved by this tool. Explain the report's contents, abnormalities, and any recommendations found within the report. Do *not* provide external medical advice, diagnoses, or opinions. If asked about topics outside the provided report context, state that you can only discuss the analyzed document."),
+        ("system", "You are MediGuide, a helpful AI assistant designed to discuss the patient's *most recently analyzed* medical report..."), # Keep prompt
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad") # Necessary for tool use / agent thoughts
+        MessagesPlaceholder(variable_name="agent_scratchpad")
     ])
-
     try:
-        # Create the agent using the LLM, tool, and prompt
+        st.write("Debug: Creating OpenAI Tools agent...")
         agent = create_openai_tools_agent(llm=_llm, tools=[_tool], prompt=prompt)
-        # Create the AgentExecutor
+        st.write("Debug: Creating Agent Executor...")
         agent_exec = AgentExecutor(
-            agent=agent,
-            tools=[_tool],
-            verbose=True, # Set to True for debugging agent steps
-            handle_parsing_errors=True, # Attempt to gracefully handle LLM output parsing errors
-            max_iterations=5 # Prevent runaway agents
-            )
+            agent=agent, tools=[_tool], verbose=True, handle_parsing_errors=True, max_iterations=5
+        )
         st.success("Chat agent created successfully.")
         return agent_exec
     except Exception as e:
         st.error(f"Failed to create chat agent: {e}")
+        st.exception(e) # Show traceback
         return None
 
 # --- File Handling & Text Processing ---
@@ -353,7 +324,7 @@ def read_file_content(file_path):
     try:
         return Path(file_path).read_text(encoding='utf-8')
     except FileNotFoundError:
-        return None # Return None if file doesn't exist yet
+        return None
     except Exception as e:
         st.error(f"Error reading file {file_path}: {e}")
         return None
@@ -362,17 +333,13 @@ def split_text_for_indexing(text_content: str):
     """Splits text content into chunks suitable for embedding."""
     if not text_content:
         return []
-    rcts = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75) # Adjusted overlap
-    # Use create_documents to add basic metadata if needed, or just split_text
-    # docs = rcts.create_documents([text_content])
+    rcts = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75)
     docs = rcts.split_text(text_content)
     # Convert simple text chunks into Langchain Document objects for Neo4jVector
-    from langchain_core.documents import Document
     return [Document(page_content=chunk) for chunk in docs]
 
 
 # --- Streamlit App Main Logic ---
-
 st.set_page_config(page_title="MediCronus POC", layout="wide")
 st.title("⚕️ MediCronus - Report Analysis & Guidance")
 st.subheader("Upload a PDF medical report for analysis and chat about the results.")
@@ -414,25 +381,20 @@ with st.sidebar:
     uploaded_file = st.file_uploader("1. Upload PDF Report", type="pdf", key="pdf_uploader")
 
     if uploaded_file is not None:
-        # Display uploaded file name
         st.write(f"Uploaded: **{uploaded_file.name}**")
-        st.session_state.current_pdf_name = uploaded_file.name
-
-        # Check if this is a new file or analysis needs to be run
-        if st.session_state.uploaded_file_path is None or Path(st.session_state.uploaded_file_path).name != uploaded_file.name:
-            # Save the new file temporarily
+        # Save/update file path only if it's a new file
+        if st.session_state.current_pdf_name != uploaded_file.name:
+            st.session_state.current_pdf_name = uploaded_file.name
             temp_dir = Path("./temp_uploads")
             temp_dir.mkdir(exist_ok=True)
-            # Use a unique name derived from the original? Or just UUID? Using UUID is safer.
             unique_filename = f"{uuid.uuid4()}_{uploaded_file.name}"
             temp_pdf_path = temp_dir / unique_filename
-
             try:
                 with open(temp_pdf_path, "wb") as f:
                     f.write(uploaded_file.getvalue())
                 st.session_state.uploaded_file_path = str(temp_pdf_path)
                 st.success("File ready for analysis.")
-                # Reset status for the new file
+                # Reset status flags for the new file
                 st.session_state.analysis_complete = False
                 st.session_state.doctors_complete = False
                 st.session_state.kb_ready = False
@@ -442,88 +404,121 @@ with st.sidebar:
                 st.session_state.doctor_recommendations = None
                 st.session_state.user_wants_doctors = None
                 st.session_state.user_city = ""
-
+                st.session_state.analysis_running = False # Ensure running flags are reset
+                st.session_state.doctors_running = False
+                st.session_state.kb_building = False
             except Exception as e:
                 st.error(f"Error saving uploaded file: {e}")
+                st.exception(e)
                 st.session_state.uploaded_file_path = None
+                st.session_state.current_pdf_name = None
 
-    # Button to trigger analysis - only active if a file is uploaded and not already analyzed
-    if st.session_state.uploaded_file_path and not st.session_state.analysis_complete:
-        if st.button("2. Analyze Report", key="analyze_button", disabled=st.session_state.analysis_running):
+    # --- Add Debug State Check RIGHT BEFORE the Button ---
+    st.sidebar.divider()
+    st.sidebar.markdown("--- **Debug Info** ---")
+    st.sidebar.write(f"**State before Analyze Button:**")
+    # Check if path exists and has a value before accessing properties
+    path_value = st.session_state.get('uploaded_file_path', None)
+    st.sidebar.write(f"  - uploaded_file_path: {'Set' if path_value else 'None'}")
+    st.sidebar.write(f"  - analysis_complete: {st.session_state.get('analysis_complete', False)}")
+    st.sidebar.write(f"  - analysis_running: {st.session_state.get('analysis_running', False)}")
+    st.sidebar.markdown("---")
+    # --- End Debug State Check ---
+
+
+    # Button to trigger analysis - only active if a file path is set and analysis not complete/running
+    if st.session_state.get('uploaded_file_path') and not st.session_state.get('analysis_complete', False):
+        analyze_disabled = st.session_state.get('analysis_running', False)
+        if st.button("2. Analyze Report", key="analyze_button", disabled=analyze_disabled):
+            st.write("Debug: Analyze button clicked.") # Debug print
             st.session_state.analysis_running = True
-            st.session_state.analysis_complete = False # Ensure reset before starting
+            # Reset downstream states
+            st.session_state.analysis_complete = False
             st.session_state.doctors_complete = False
             st.session_state.kb_ready = False
             st.session_state.chat_agent_executor = None
             st.session_state.chat_messages = []
+            st.rerun() # Rerun immediately to show spinner and disable button
 
+    # Execute analysis if flag is set (handles the rerun from button click)
+    if st.session_state.get('analysis_running') and not st.session_state.get('analysis_complete'):
             with st.spinner("Analyzing report... This may take a few moments."):
                 try:
-                    st.write("Loading PDF content...")
-                    loader = PyPDFLoader(st.session_state.uploaded_file_path)
+                    st.write("Debug: Inside Analyze try block.")
+                    pdf_path = st.session_state.uploaded_file_path
+                    st.write(f"Debug: Loading PDF from {pdf_path}")
+                    if not pdf_path or not Path(pdf_path).exists():
+                         raise FileNotFoundError(f"PDF file not found at {pdf_path}")
+
+                    loader = PyPDFLoader(pdf_path)
                     report_docs = loader.load()
                     report_content = "\n\n".join([doc.page_content for doc in report_docs])
+                    st.write(f"Debug: PDF content length: {len(report_content)}")
 
                     if not report_content.strip():
                          st.error("Failed to extract text content from the PDF.")
-                         raise ValueError("Empty report content")
+                         raise ValueError("Empty report content after loading")
 
-                    st.write("Running Medic Bot Crew...")
+                    st.write("Debug: Initializing Medic Bot Crew...")
                     medic_crew = Medic_Bot().crew()
-                    # Ensure inputs dict keys match task descriptions' placeholders
-                    result = medic_crew.kickoff(inputs={"report": report_content})
+                    st.write("Debug: Medic Bot Crew Initialized.")
 
-                    # Process the result - expecting markdown outputs from tasks
-                    # CrewAI's result object might structure outputs differently.
-                    # Assuming the final result aggregates task outputs or the last task's output is primary.
-                    # Let's try to access specific task outputs if possible (depends on CrewAI version/structure)
-                    st.session_state.analysis_results = {
-                        "structured_report": result.tasks_output[0].raw_output if len(result.tasks_output) > 0 else "Not generated.",
-                        "explained_report": result.tasks_output[1].raw_output if len(result.tasks_output) > 1 else "Not generated.",
-                        "abnormalities_report": result.tasks_output[2].raw_output if len(result.tasks_output) > 2 else "Not generated."
-                        # Fallback to overall raw if specific task outputs aren't easily accessible
-                        # "abnormalities_report": result.raw # Assuming the last task output is the raw result
-                    }
+                    inputs = {"report": report_content}
+                    st.write(f"Debug: Inputs for Medic Bot: {list(inputs.keys())}")
 
-                    if not st.session_state.analysis_results.get("abnormalities_report"):
-                         st.warning("Could not extract abnormalities report from crew result.")
-                         # Maybe use the final raw output as a fallback
+                    st.write("Debug: Kicking off Medic Bot Crew...")
+                    result = medic_crew.kickoff(inputs=inputs)
+                    st.write("Debug: Medic Bot Crew kickoff finished.")
+
+                    # Process results carefully
+                    st.session_state.analysis_results = {}
+                    if hasattr(result, 'tasks_output') and result.tasks_output:
+                        st.write("Debug: Processing tasks_output from crew result.")
+                        if len(result.tasks_output) > 0 and hasattr(result.tasks_output[0], 'raw_output'):
+                            st.session_state.analysis_results["structured_report"] = result.tasks_output[0].raw_output
+                        if len(result.tasks_output) > 1 and hasattr(result.tasks_output[1], 'raw_output'):
+                            st.session_state.analysis_results["explained_report"] = result.tasks_output[1].raw_output
+                        if len(result.tasks_output) > 2 and hasattr(result.tasks_output[2], 'raw_output'):
+                            st.session_state.analysis_results["abnormalities_report"] = result.tasks_output[2].raw_output
+                        else: # Fallback for abnormalities if last task output isn't indexed as expected
+                             st.session_state.analysis_results["abnormalities_report"] = result.tasks_output[-1].raw_output
+                    elif hasattr(result, 'raw'): # Fallback if tasks_output structure is different
+                         st.write("Debug: Using result.raw as fallback for abnormalities report.")
                          st.session_state.analysis_results["abnormalities_report"] = result.raw
-
+                    else:
+                        st.warning("Could not parse crew results effectively. Check crew output structure.")
 
                     st.session_state.analysis_complete = True
                     st.success("Report analysis complete!")
 
                 except Exception as e:
                     st.error(f"An error occurred during analysis: {e}")
-                    st.session_state.analysis_complete = False
+                    st.exception(e) # Print full traceback in Streamlit app
+                    st.session_state.analysis_complete = False # Ensure it's marked as not complete on error
                 finally:
-                    st.session_state.analysis_running = False
-                    # Clean up temp file? Optional, might keep for debugging or re-analysis
-                    # if st.session_state.uploaded_file_path and Path(st.session_state.uploaded_file_path).exists():
-                    #     Path(st.session_state.uploaded_file_path).unlink()
-                    #     st.session_state.uploaded_file_path = None # Reset path after processing
+                    st.session_state.analysis_running = False # Mark as not running anymore
+                    # Optionally cleanup temp file here
+                    # if pdf_path and Path(pdf_path).exists():
+                    #    try: Path(pdf_path).unlink() except OSError: pass
+                    #    st.session_state.uploaded_file_path = None
                     st.rerun() # Rerun to update UI based on completion status
 
     # Display current status
     st.sidebar.divider()
-    st.sidebar.write("Status:")
-    if st.session_state.analysis_complete:
-        st.sidebar.success("✅ Analysis Complete")
-    else:
-        st.sidebar.info("⏳ Analysis Pending")
+    st.sidebar.write("**Status:**")
+    status_analysis = "✅ Analysis Complete" if st.session_state.get('analysis_complete') else "⏳ Analysis Pending/Failed"
+    st.sidebar.info(status_analysis)
 
-    if st.session_state.user_wants_doctors == 'Yes' and st.session_state.doctors_complete:
-         st.sidebar.success("✅ Doctors Searched")
-    elif st.session_state.user_wants_doctors == 'No':
-         st.sidebar.info("⚪ Doctors Skipped")
-    elif st.session_state.user_wants_doctors == 'Yes':
-         st.sidebar.info("⏳ Doctor Search Pending")
+    if st.session_state.get('analysis_complete'): # Only show doctor/KB status after analysis
+        status_doctors = "⚪ Not Requested"
+        if st.session_state.get('user_wants_doctors') == 'Yes':
+            status_doctors = "✅ Doctors Searched" if st.session_state.get('doctors_complete') else "⏳ Doctor Search Pending/Failed"
+        elif st.session_state.get('user_wants_doctors') == 'No':
+            status_doctors = "⚪ Doctors Skipped"
+        st.sidebar.info(status_doctors)
 
-    if st.session_state.kb_ready:
-        st.sidebar.success("✅ MediGuide Ready")
-    else:
-        st.sidebar.info("⏳ MediGuide Not Ready")
+        status_kb = "✅ MediGuide Ready" if st.session_state.get('kb_ready') else "⏳ MediGuide Not Ready"
+        st.sidebar.info(status_kb)
 
 
 # --- Main Area Layout (Report Display & Chat) ---
@@ -531,82 +526,92 @@ col1, col2 = st.columns([3, 2]) # Give more space to report display
 
 with col1:
     st.header("Analysis Results")
-    if not st.session_state.analysis_complete:
-        if st.session_state.uploaded_file_path:
+    if not st.session_state.get('analysis_complete'):
+        if st.session_state.get('uploaded_file_path'):
              st.info("Report uploaded. Click 'Analyze Report' in the sidebar to begin.")
+        elif st.session_state.get('analysis_running'):
+             st.info("Analysis is in progress...") # Message while running
         else:
              st.info("Upload a PDF report using the sidebar to start the process.")
     else:
         # --- Display Analysis Results in Tabs ---
         tab1, tab2, tab3 = st.tabs(["📄 Structured Report", "🩺 Explained Report", "❗ Abnormalities Summary"])
-
         with tab1:
-            report_md = st.session_state.analysis_results.get("structured_report", "No structured report generated.")
+            report_md = st.session_state.analysis_results.get("structured_report", "*No structured report generated.*")
             st.markdown(report_md)
         with tab2:
-            explained_md = st.session_state.analysis_results.get("explained_report", "No explained report generated.")
+            explained_md = st.session_state.analysis_results.get("explained_report", "*No explained report generated.*")
             st.markdown(explained_md)
         with tab3:
-            abnormal_md = st.session_state.analysis_results.get("abnormalities_report", "No abnormalities summary generated.")
+            abnormal_md = st.session_state.analysis_results.get("abnormalities_report", "*No abnormalities summary generated.*")
             st.markdown(abnormal_md)
 
         st.divider()
 
         # --- Doctor Recommendation Flow ---
-        if not st.session_state.analysis_results.get("abnormalities_report"):
-            st.warning("Cannot search for doctors as abnormalities report was not generated.")
+        abnormalities_available = bool(st.session_state.analysis_results.get("abnormalities_report"))
+        if not abnormalities_available:
+            st.warning("Cannot search for doctors as abnormalities report was not generated or is empty.")
         elif st.session_state.user_wants_doctors is None: # Ask only once per analysis
              st.subheader("Find Specialists?")
              st.radio(
                  "Would you like to search for recommended doctors based on the abnormalities?",
-                 ("Yes", "No"),
-                 key="want_doctors_radio",
-                 index=None,
+                 ("Yes", "No"), key="want_doctors_radio", index=None,
                  on_change=lambda: setattr(st.session_state, 'user_wants_doctors', st.session_state.want_doctors_radio)
              )
 
-        # If user wants doctors and search hasn't been done/completed yet
-        if st.session_state.user_wants_doctors == "Yes" and not st.session_state.doctors_complete:
-            st.subheader("Enter Location")
-            city = st.text_input("Your City:", key="city_input", value=st.session_state.user_city)
-            st.session_state.user_city = city # Store city input
+        # Section for finding doctors
+        if st.session_state.user_wants_doctors == "Yes" and abnormalities_available:
+            if not st.session_state.get('doctors_complete', False):
+                st.subheader("Enter Location")
+                city = st.text_input("Your City:", key="city_input", value=st.session_state.user_city)
+                st.session_state.user_city = city
 
-            if city:
-                if st.button("3. Find Doctors", key="find_doctors_button", disabled=st.session_state.doctors_running):
+                find_doctors_disabled = st.session_state.get('doctors_running', False) or not city
+                if st.button("3. Find Doctors", key="find_doctors_button", disabled=find_doctors_disabled):
+                    st.write("Debug: Find Doctors button clicked.") # Debug
                     st.session_state.doctors_running = True
                     st.session_state.doctors_complete = False # Reset before starting search
+                    st.rerun() # Show spinner
 
-                    with st.spinner("Searching for relevant doctors..."):
+            # Execute doctor search if flag is set
+            if st.session_state.get('doctors_running') and not st.session_state.get('doctors_complete'):
+                 with st.spinner("Searching for relevant doctors..."):
                         try:
-                            st.write(f"Searching doctors in {city}...")
+                            st.write("Debug: Inside Find Doctors try block.") # Debug
+                            st.write(f"Debug: Initializing Doctor Bot Crew...") # Debug
                             doctor_crew = Doctor_Bot().crew()
-                            # Pass necessary inputs to the doctor crew
+                            st.write("Debug: Doctor Bot Crew initialized.") # Debug
+
                             abnormalities_summary = st.session_state.analysis_results.get("abnormalities_report", "General Health Checkup")
-                            # Maybe extract just the list of abnormalities if the report is structured that way
-                            inputs = {
-                                "user_city": city,
-                                "abnormalities": abnormalities_summary # Pass the abnormalities text/summary
-                            }
+                            current_city = st.session_state.user_city
+                            inputs = {"user_city": current_city, "abnormalities": abnormalities_summary}
+                            st.write(f"Debug: Inputs for Doctor Bot: user_city='{current_city}', abnormalities_len={len(inputs['abnormalities'])}") # Debug
+
+                            st.write("Debug: Kicking off Doctor Bot Crew...") # Debug
                             doctor_result = doctor_crew.kickoff(inputs=inputs)
-                            # Assuming the result is the markdown text in the raw output
-                            st.session_state.doctor_recommendations = doctor_result.raw
+                            st.write("Debug: Doctor Bot Crew kickoff finished.") # Debug
+
+                            st.session_state.doctor_recommendations = doctor_result.raw if hasattr(doctor_result, 'raw') else "*Could not retrieve doctor recommendations.*"
                             st.session_state.doctors_complete = True # Mark as complete (search attempted)
                             st.success("Doctor search finished.")
 
                         except Exception as e:
                             st.error(f"An error occurred during doctor search: {e}")
+                            st.exception(e) # Print full traceback
                             st.session_state.doctors_complete = False # Mark as failed
                         finally:
                             st.session_state.doctors_running = False
                             st.rerun() # Update UI
 
-        # Display doctor results if search was completed
-        if st.session_state.doctors_complete and st.session_state.doctor_recommendations:
-            st.subheader("Doctor Recommendations")
-            with st.expander("View Found Specialists", expanded=True):
-                 st.markdown(st.session_state.doctor_recommendations)
-        elif st.session_state.doctors_complete and not st.session_state.doctor_recommendations:
-             st.info("The search completed, but no specific doctor recommendations were found or generated.")
+            # Display doctor results if search was completed
+            if st.session_state.get('doctors_complete'):
+                st.subheader("Doctor Recommendations")
+                if st.session_state.get('doctor_recommendations'):
+                    with st.expander("View Found Specialists", expanded=True):
+                        st.markdown(st.session_state.doctor_recommendations)
+                else:
+                    st.info("The search completed, but no specific doctor recommendations were generated.")
 
         # Acknowledge if user chose No
         if st.session_state.user_wants_doctors == "No":
@@ -614,16 +619,18 @@ with col1:
 
 
         # --- Knowledge Base Building (Trigger Automatically after Analysis/Doctor steps) ---
-        # Determine if ready for KB: analysis done AND (doctors skipped OR doctors searched)
-        ready_for_kb = st.session_state.analysis_complete and \
-                       (st.session_state.user_wants_doctors == 'No' or st.session_state.doctors_complete)
+        ready_for_kb = st.session_state.get('analysis_complete') and \
+                       (st.session_state.get('user_wants_doctors') == 'No' or st.session_state.get('doctors_complete'))
 
-        if ready_for_kb and not st.session_state.kb_ready and not st.session_state.kb_building:
+        if ready_for_kb and not st.session_state.get('kb_ready') and not st.session_state.get('kb_building'):
+            st.write("Debug: Conditions met for KB building.") # Debug
             st.session_state.kb_building = True
+            st.rerun() # Show spinner
+
+        if st.session_state.get('kb_building'):
             with st.spinner("Preparing MediGuide Assistant... Building Knowledge Base"):
                 try:
-                    st.write("Gathering analyzed content...")
-                    # Combine relevant text content for indexing
+                    st.write("Debug: Gathering analyzed content for KB...") # Debug
                     content_to_index = []
                     if st.session_state.analysis_results.get("structured_report"):
                         content_to_index.append(st.session_state.analysis_results["structured_report"])
@@ -631,7 +638,7 @@ with col1:
                         content_to_index.append(st.session_state.analysis_results["explained_report"])
                     if st.session_state.analysis_results.get("abnormalities_report"):
                         content_to_index.append(st.session_state.analysis_results["abnormalities_report"])
-                    if st.session_state.doctor_recommendations:
+                    if st.session_state.get('doctor_recommendations'):
                         content_to_index.append(st.session_state.doctor_recommendations)
 
                     full_text = "\n\n---\n\n".join(content_to_index)
@@ -640,39 +647,35 @@ with col1:
                         st.error("No content available to build knowledge base.")
                         raise ValueError("Empty content for KB")
 
-                    st.write("Splitting documents...")
+                    st.write("Debug: Splitting documents for KB...") # Debug
                     doc_chunks = split_text_for_indexing(full_text)
 
                     if not doc_chunks:
                          st.error("Failed to split documents for indexing.")
                          raise ValueError("No document chunks created")
 
-                    st.write("Setting up vector store...")
+                    st.write("Debug: Setting up vector store for KB...") # Debug
                     embeddings = get_embeddings_model()
                     if embeddings:
                          retriever_tool, vector_db = setup_vector_store_and_retriever(doc_chunks, embeddings)
-
                          if retriever_tool:
-                            st.write("Initializing chat agent...")
+                            st.write("Debug: Initializing chat agent for KB...") # Debug
                             llm = get_llm()
                             if llm:
                                 agent_executor = create_chat_agent(llm, retriever_tool)
                                 if agent_executor:
                                     st.session_state.chat_agent_executor = agent_executor
                                     st.session_state.kb_ready = True
-                                    st.session_state.chat_messages = [] # Clear history for new KB
+                                    st.session_state.chat_messages = [{"role": "assistant", "content": "Hi! I'm MediGuide. Ask me questions about your analyzed report."}] # Start with greeting
                                     st.success("MediGuide Assistant is ready!")
-                                else:
-                                     st.error("Failed to create chat agent executor.")
-                            else:
-                                st.error("Failed to initialize LLM for chat agent.")
-                         else:
-                             st.error("Failed to setup retriever tool for knowledge base.")
-                    else:
-                        st.error("Failed to initialize embeddings model.")
+                                else: st.error("Failed to create chat agent executor.")
+                            else: st.error("Failed to initialize LLM for chat agent.")
+                         else: st.error("Failed to setup retriever tool for knowledge base.")
+                    else: st.error("Failed to initialize embeddings model.")
 
                 except Exception as e:
                     st.error(f"Failed to build knowledge base or setup chatbot: {e}")
+                    st.exception(e)
                     st.session_state.kb_ready = False
                 finally:
                      st.session_state.kb_building = False
@@ -682,10 +685,13 @@ with col1:
 with col2:
     st.header("💬 Chat with MediGuide")
 
-    if not st.session_state.kb_ready:
-        st.info("MediGuide will be available here once the report is analyzed and the knowledge base is prepared.")
-        if st.session_state.kb_building:
-            st.warning("Currently preparing MediGuide...")
+    if not st.session_state.get('kb_ready'):
+        if st.session_state.get('kb_building'):
+             st.info("Preparing MediGuide Assistant...")
+        elif st.session_state.get('analysis_complete'):
+             st.info("MediGuide will be available after Knowledge Base preparation is complete.")
+        else:
+             st.info("MediGuide will be available here once the report is analyzed and the knowledge base is prepared.")
     else:
         # Display chat messages from history
         for message in st.session_state.chat_messages:
@@ -694,7 +700,6 @@ with col2:
 
         # Accept user input using st.chat_input
         if prompt := st.chat_input("Ask about your analyzed report..."):
-            # Add user message to state and display it
             st.session_state.chat_messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -702,27 +707,29 @@ with col2:
             # Get assistant response
             if st.session_state.chat_agent_executor:
                 with st.chat_message("assistant"):
-                    with st.spinner("MediGuide is thinking..."):
-                        try:
-                            # Prepare the chat history in the format expected by the agent
-                            # (Often list of BaseMessage objects or simple key-value pairs)
-                            # This example assumes the agent handles a list of dicts via MessagesPlaceholder conversion
-                            langchain_chat_history = []
-                            for msg in st.session_state.chat_messages[:-1]: # Exclude the current prompt
-                                langchain_chat_history.append(f"{msg['role']}: {msg['content']}")
+                    message_placeholder = st.empty()
+                    message_placeholder.markdown("Thinking...")
+                    try:
+                        # Prepare simple chat history (adapt if agent needs specific format)
+                        langchain_chat_history = []
+                        for msg in st.session_state.chat_messages[:-1]: # Exclude current prompt
+                             # Simple format, adjust if using BaseMessage objects
+                             langchain_chat_history.append(f"{msg['role']}: {msg['content']}")
 
-                            response = st.session_state.chat_agent_executor.invoke({
-                                "input": prompt,
-                                "chat_history": langchain_chat_history
-                            })
-                            response_content = response.get("output", "Sorry, I encountered an issue processing that.")
+                        st.write("Debug: Invoking chat agent...") # Debug
+                        response = st.session_state.chat_agent_executor.invoke({
+                            "input": prompt,
+                            "chat_history": langchain_chat_history # Pass history
+                        })
+                        response_content = response.get("output", "*Sorry, I encountered an issue processing that.*")
+                        st.write("Debug: Chat agent invocation complete.") # Debug
 
-                        except Exception as e:
-                            st.error(f"Error during chat generation: {e}")
-                            response_content = "Sorry, an error occurred while generating the response."
+                    except Exception as e:
+                        st.error(f"Error during chat generation: {e}")
+                        st.exception(e)
+                        response_content = "*Sorry, an error occurred while generating the response.*"
 
-                    st.markdown(response_content)
-                # Add assistant response to state
+                    message_placeholder.markdown(response_content) # Update placeholder with actual response
                 st.session_state.chat_messages.append({"role": "assistant", "content": response_content})
             else:
                 st.error("Chat agent is not available.")
