@@ -1,0 +1,33 @@
+# requirements.txt
+
+# Core application framework
+streamlit
+
+# AI Agent Framework
+crewai
+crewai-tools
+
+# Langchain Core and Community components
+langchain
+langchain-community # For loaders (PyPDF, TextLoader), Neo4jVector
+
+# Langchain Integrations
+langchain-openai # For OpenAIEmbeddings
+langchain-groq   # For ChatGroq LLM
+
+# LLM/Embedding Provider Libraries (often pulled by langchain integrations, but good to specify)
+openai>=1.0.0 # Required by langchain-openai
+groq          # Required by langchain-groq
+tiktoken      # Required by OpenAI for token counting
+
+# PDF Parsing
+pypdf # Required by Langchain's PyPDFLoader
+
+# Database Driver
+neo4j # Required by Langchain's Neo4jVector
+
+# Async Utilities
+nest_asyncio # For handling asyncio event loops in Streamlit/Jupyter environments
+
+# Environment Variable Management (Recommended for local dev)
+python-dotenv
