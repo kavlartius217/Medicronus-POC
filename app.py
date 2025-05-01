@@ -10,9 +10,9 @@ from pathlib import Path
 import nest_asyncio # For handling asyncio event loops
 
 # --- Essential Imports ---
-from crewai import Agent, Task, Crew, CrewBase
+from crewai import Agent, Task, Crew
 from crewai.process import Process
-from crewai.project import agent, task, crew # For decorator usage
+from crewai.project import agent, task, crew,  CrewBase
 from crewai_tools import SerperDevTool
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
