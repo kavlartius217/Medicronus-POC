@@ -526,7 +526,7 @@ with tab3:
                         # Check if API keys are set
                         if 'SERPER_DEV_TOOL' not in os.environ or not os.environ['SERPER_DEV_TOOL']:
                             st.error("SERPER DEV API Key not set. Please set it in the sidebar.")
-                            return
+                       
                             
                         medicronus = MediTrustAI()
                         medicronus.state.abnormalities = st.session_state.abnormalities
